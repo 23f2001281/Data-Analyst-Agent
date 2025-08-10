@@ -25,3 +25,9 @@ langchain
 langchain-core
 langchain-experimental
 langchain-google-genai
+langchain-community
+langchain-duckdb
+duckdb
+pymongo
+redis
+duckdb-engine
