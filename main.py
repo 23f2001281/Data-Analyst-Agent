@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, File, UploadFile, Form
+from fastapi import FastAPI, Request, File, UploadFile, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -36,6 +36,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import ast
 import base64
+import logging
 
 load_dotenv()
 
@@ -3223,6 +3224,8 @@ async def create_planner_executor_workflow(user_query: str, file_path: Optional[
         dprint(f"🚀 Passing execution plan to ExecutorCrew with user_query: {user_query[:200]}...")
         results = await executor.execute_plan(execution_plan)
         
+        dprint(f"🔍 DEBUG: Executor results: {results}")
+        
         # Format the results for the user
         final_results = {}
         for task_id, result in results.items():
@@ -3231,10 +3234,13 @@ async def create_planner_executor_workflow(user_query: str, file_path: Optional[
             else:
                 final_results[task_id] = result
         
+        dprint(f"🔍 DEBUG: Final results: {final_results}")
+        
         # Create a summary response
         if len(final_results) == 1:
             # Single result, return it directly
             result = list(final_results.values())[0]
+            dprint(f"🔍 DEBUG: Single result case, returning: {result}")
             if isinstance(result, str):
                 return result, ["Planner-Executor workflow completed successfully"]
             else:
@@ -3256,6 +3262,7 @@ async def create_planner_executor_workflow(user_query: str, file_path: Optional[
                     if isinstance(res, str):
                         combined_parts.append(res)
             combined_answer = "\n\n".join(combined_parts) if combined_parts else str(final_results)
+            dprint(f"🔍 DEBUG: Multiple results case, returning: {combined_answer}")
             return combined_answer, ["Planner-Executor workflow completed successfully"]
             
     except Exception as e:
@@ -4281,151 +4288,183 @@ class FallbackLoopManager:
 # Global fallback loop manager instance
 fallback_manager = FallbackLoopManager()
 
-@app.get("/fallback/status")
-async def get_fallback_status():
-    """Get the overall status of the fallback loop system"""
-    return {
-        "status": "active",
-        "summary": fallback_manager.get_status_summary(),
-        "config": {
-            "max_retries": fallback_manager.max_retries,
-            "max_replans": fallback_manager.max_replans
-        }
-    }
 
-@app.get("/fallback/analysis/{task_id}")
-async def get_task_failure_analysis(task_id: str):
-    """Get detailed failure analysis for a specific task"""
-    analysis = fallback_manager.analyze_failures(task_id=task_id)
-    if not analysis:
-        return {"error": f"No failure data found for task: {task_id}"}
-    return analysis
 
-@app.get("/fallback/analysis/execution/{execution_id}")
-async def get_execution_failure_analysis(execution_id: str):
-    """Get detailed failure analysis for a specific execution"""
-    analysis = fallback_manager.analyze_failures(execution_id=execution_id)
-    if not analysis:
-        return {"error": f"No failure data found for execution: {execution_id}"}
-    return analysis
-
-@app.post("/fallback/reset/{task_id}")
-async def reset_task_retry_count(task_id: str):
-    """Reset retry count for a specific task"""
-    fallback_manager.reset_counts(task_id=task_id)
-    return {"message": f"Retry count reset for task: {task_id}"}
-
-@app.post("/fallback/reset/execution/{execution_id}")
-async def reset_execution_replan_count(execution_id: str):
-    """Reset replan count for a specific execution"""
-    fallback_manager.reset_counts(execution_id=execution_id)
-    return {"message": f"Replan count reset for execution: {execution_id}"}
-
-@app.get("/sql/mapping/status")
-async def get_sql_mapping_status():
-    """Get the status of the SQL function mapping system"""
-    return {
-        "status": "active",
-        "supported_databases": list(sql_mapper.function_maps.keys()),
-        "total_function_mappings": sum(len(db_config['date_patterns']) for db_config in sql_mapper.function_maps.values())
-    }
-
-@app.get("/sql/mapping/{database_type}")
-async def get_database_mapping_info(database_type: str):
-    """Get detailed mapping information for a specific database type"""
-    if database_type not in sql_mapper.function_maps:
-        return {"error": f"Unsupported database type: {database_type}"}
-    
-    db_config = sql_mapper.function_maps[database_type]
-    return {
-        "database_type": database_type,
-        "date_functions": db_config['date_functions'],
-        "date_patterns": db_config['date_patterns'],
-        "constraints": db_config.get('constraints', {}),
-        "hints": sql_mapper.get_database_specific_hints(database_type)
-    }
-
-@app.get("/sql/cache/status")
-async def get_sql_cache_status():
-    """Get the status of the SQL query cache system"""
-    return {
-        "status": "active",
-        "cache_stats": sql_query_cache.get_cache_stats()
-    }
-
-@app.get("/sql/timeout/status")
-async def get_sql_timeout_status():
-    """Get the status of the SQL timeout management system"""
-    return {
-        "status": "active",
-        "timeout_config": sql_timeout_manager.get_timeout_config(),
-        "active_queries": sql_timeout_manager.get_active_queries()
-    }
-
-@app.get("/sql/connection-pool/status")
-async def get_sql_connection_pool_status():
-    """Get the status of the SQL connection pool system"""
-    return {
-        "status": "active",
-        "pool_stats": sql_connection_pool.get_pool_stats()
-    }
-
-@app.get("/llm/status")
-async def get_llm_manager_status():
-    """Get the status of the centralized LLM manager"""
-    return {
-        "status": "active",
-        "llm_instances": list(llm_manager._llm_instances.keys()),
-        "total_instances": len(llm_manager._llm_instances)
-    }
-
-@app.post("/sql/timeout/cancel/{query_id}")
-async def cancel_sql_query(query_id: str):
-    """Cancel a running SQL query"""
-    success = sql_timeout_manager.cancel_query(query_id)
-    return {
-        "message": f"Query {query_id} {'cancelled' if success else 'not found'}",
-        "success": success
-    }
-
-@app.post("/sql/cache/clear")
-async def clear_sql_cache():
-    """Clear the SQL query cache"""
-    sql_query_cache._cache.clear()
-    sql_query_cache._access_count.clear()
-    return {"message": "SQL query cache cleared successfully"}
-
-@app.post("/sql/connection-pool/cleanup")
-async def cleanup_sql_connections():
-    """Clean up idle SQL connections"""
-    await sql_connection_pool.cleanup_idle_connections()
-    return {"message": "Idle SQL connections cleaned up successfully"}
-
-@app.post("/sql/test")
-async def test_sql_tool():
-    """Test endpoint to verify SQL tool functionality"""
+async def analyze_files_with_agents(request_folder: str, saved_files: dict, question_text: str = None):
+    """
+    This function analyzes files using the agent workflow.
+    It's designed to work with the promptfoo evaluation framework.
+    """
     try:
-        # Test with a simple query
-        test_query = "SELECT COUNT(*) FROM data LIMIT 1"
-        test_db_type = "duckdb"
+        # If we have a question.txt file, use its content as the query
+        if question_text:
+            query = question_text
+        else:
+            # Fallback: create a basic query based on available files
+            file_names = list(saved_files.keys())
+            query = f"Analyze the provided files: {file_names} and provide insights about the data."
         
-        # Test SQL validation
-        cleaned_sql = sql_validator.clean_sql_response(test_query)
-        validated_sql = await sql_validator.validate_and_fix_sql(cleaned_sql, test_db_type)
+        # Execute the Planner-Executor workflow with the request folder and query
+        # First, let's find the actual CSV files in the folder
+        csv_files = []
+        for filename in os.listdir(request_folder):
+            if filename.endswith('.csv'):
+                csv_files.append(os.path.join(request_folder, filename))
         
-        return {
-            "status": "success",
-            "test_query": test_query,
-            "cleaned_sql": cleaned_sql,
-            "validated_sql": validated_sql,
-            "validation_passed": True
-        }
+        if not csv_files:
+            return {"error": "No CSV files found in the uploaded folder"}
+        
+        # For now, let's use the first CSV file as the main data source
+        # This is a temporary fix - the proper solution would be to modify the workflow
+        main_csv_file = csv_files[0]
+        
+        print(f"🔍 DEBUG: Found CSV files: {csv_files}")
+        print(f"🔍 DEBUG: Using main CSV file: {main_csv_file}")
+        
+        workflow_result = await create_planner_executor_workflow(
+            query,
+            file_path=main_csv_file  # Pass the actual CSV file path, not the folder
+        )
+        
+        # Debug logging to see what we're getting
+        print(f"🔍 DEBUG: Workflow result type: {type(workflow_result)}")
+        print(f"🔍 DEBUG: Workflow result value: {workflow_result}")
+        
+        # Handle the tuple return from create_planner_executor_workflow
+        if isinstance(workflow_result, tuple) and len(workflow_result) == 2:
+            result, reasoning_steps = workflow_result
+        else:
+            result = workflow_result
+            reasoning_steps = []
+        
+        print(f"🔍 DEBUG: Unpacked result type: {type(result)}")
+        print(f"🔍 DEBUG: Unpacked result value: {result}")
+        print(f"🔍 DEBUG: Reasoning steps: {reasoning_steps}")
+        
+        # Parse the final result - handle different response formats
+        if result is None:
+            return {"error": "No result returned from workflow"}
+        elif isinstance(result, dict):
+            if "error" in result:
+                return {"error": result['error']}
+            elif "answer" in result:
+                return result["answer"]
+            elif "result" in result:
+                # Convert human-readable output to proper JSON object using schema from query
+                text_result = result["result"]
+                try:
+                    parsed_object = ResponseFormatter.format_to_required_schema(text_result, query)
+                    return parsed_object
+                except Exception as e:
+                    print(f"🔍 DEBUG: Schema-driven formatting failed: {e}")
+                    # Fallback to raw result if formatting fails
+                    return {"result": text_result}
+            else:
+                return result
+        elif isinstance(result, str):
+            # Check if it's already a JSON string
+            try:
+                parsed = json.loads(result)
+                return parsed
+            except json.JSONDecodeError:
+                # If it's not JSON, try schema-driven formatting based on query
+                try:
+                    parsed_object = ResponseFormatter.format_to_required_schema(result, query)
+                    return parsed_object
+                except Exception as e:
+                    print(f"🔍 DEBUG: Schema-driven formatting failed: {e}")
+                    # Fallback to raw result if formatting fails
+                    return {"result": result}
+        else:
+            return {"result": str(result)}
+        
     except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e),
-            "error_type": type(e).__name__
-    }
+        import traceback
+        traceback.print_exc()
+        return {"error": f"An error occurred during analysis: {str(e)}"}
+
+@app.post("/api")
+async def analyze(request: Request):
+    """
+    Main analysis endpoint that handles multipart form data with files and questions.
+    This matches the pattern used in other similar projects.
+    """
+    main_loop = 0
+    while main_loop < 3:
+        try:
+            # Create a unique folder for this request
+            request_id = str(uuid.uuid4())
+            request_folder = os.path.join("temp_files", request_id)
+            os.makedirs(request_folder, exist_ok=True)
+
+            # Setup logging for this request
+            log_path = os.path.join(request_folder, "app.log")
+            logger = logging.getLogger(request_id)
+            logger.setLevel(logging.INFO)
+            
+            # Remove previous handlers if any (avoid duplicate logs)
+            if logger.hasHandlers():
+                logger.handlers.clear()
+            
+            file_handler = logging.FileHandler(log_path)
+            formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+            
+            # Also log to console
+            stream_handler = logging.StreamHandler()
+            stream_handler.setFormatter(formatter)
+            logger.addHandler(stream_handler)
+
+            logger.info("Step-1: Folder created: %s", request_folder)
+
+            form = await request.form()
+            question_text = None
+            saved_files = {}
+
+            # Save all uploaded files to the request folder
+            for field_name, value in form.items():
+                if hasattr(value, "filename") and value.filename:  # It's a file
+                    file_path = os.path.join(request_folder, value.filename)
+                    with open(file_path, "wb") as f:
+                        content = await value.read()
+                        f.write(content)
+                    saved_files[field_name] = file_path
+
+                    # If it's questions.txt, read its content
+                    if field_name == "questions.txt":
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            question_text = f.read()
+                else:
+                    saved_files[field_name] = value
+
+            logger.info("Step-2: Files saved: %s", list(saved_files.keys()))
+            if question_text:
+                logger.info("Step-3: Question text loaded: %s", question_text[:100] + "..." if len(question_text) > 100 else question_text)
+
+            # Analyze files using agents
+            result = await analyze_files_with_agents(request_folder, saved_files, question_text)
+            
+            logger.info("Step-4: Analysis completed")
+            logger.info("Step-4a: Result type: %s", type(result))
+            logger.info("Step-4b: Result value: %s", str(result)[:200] if result else "None")
+            
+            # Clean up the request folder
+            try:
+                import shutil
+                shutil.rmtree(request_folder)
+                logger.info("Step-5: Cleanup completed")
+            except Exception as e:
+                logger.warning("Cleanup failed: %s", str(e))
+            
+            return result
+
+        except Exception as e:
+            logger.error("Error in main loop %d: %s", main_loop, str(e))
+            main_loop += 1
+            if main_loop >= 3:
+                return {"error": f"Failed after 3 attempts: {str(e)}"}
+            await asyncio.sleep(1)  # Wait before retry
 
 if __name__ == "__main__":
     import uvicorn

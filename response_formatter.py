@@ -173,6 +173,191 @@ class ResponseFormatter:
         except Exception as e:
             # Fallback to error format
             return json.dumps([f"Error formatting response: {str(e)}"])
+
+    # ----------------- Schema-driven object formatting (for promptfoo) -----------------
+    @staticmethod
+    def extract_required_keys_from_query(query_text: Optional[str]) -> List[str]:
+        """Extract required JSON keys from the question text. Looks for a section
+        like: 'Return a JSON object with keys:' and collects backticked keys in bullet list.
+        """
+        if not query_text:
+            return []
+        try:
+            # Find block starting with the phrase and collect keys between backticks
+            pattern_start = r"Return a JSON object with keys:([\s\S]*?)\n\n|Return a JSON object with keys:([\s\S]*)$"
+            match = re.search(pattern_start, query_text, re.IGNORECASE)
+            if not match:
+                # Fallback: collect all backticked words in the text
+                return re.findall(r"`([a-zA-Z0-9_]+)`", query_text)
+            block = match.group(1) or match.group(2) or ""
+            keys = re.findall(r"-\s*`([a-zA-Z0-9_]+)`", block)
+            if keys:
+                return keys
+            # Fallback: any backticked identifiers in block
+            return re.findall(r"`([a-zA-Z0-9_]+)`", block)
+        except Exception:
+            return []
+
+    @staticmethod
+    def _collect_image_data_uris_from_text(text: str) -> List[str]:
+        """Collect base64 data URIs by first inlining IMAGE_PATHs, then extracting data:image/... strings."""
+        # Inline any IMAGE_PATH occurrences
+        inlined = ResponseFormatter._inline_image_paths(text)
+        # If inlined returns JSON-string, parse back to text
+        if isinstance(inlined, (list, dict)):
+            try:
+                inlined = json.dumps(inlined)
+            except Exception:
+                inlined = str(inlined)
+        try:
+            return re.findall(r"data:image/[^;]+;base64,[A-Za-z0-9+/=]+", inlined)
+        except Exception:
+            return []
+
+    @staticmethod
+    def _attempt_parse_mapping_from_text(text: str) -> Optional[dict]:
+        """Try to parse an embedded mapping from text. Supports JSON objects and Python dict repr via ast.literal_eval."""
+        try:
+            import ast
+            # First try to find a JSON object substring
+            json_match = re.search(r"\{[\s\S]*\}", text)
+            if json_match:
+                blob = json_match.group(0)
+                # Try JSON
+                try:
+                    return json.loads(blob)
+                except Exception:
+                    pass
+                # Try Python dict -> JSON via ast.literal_eval
+                try:
+                    py_obj = ast.literal_eval(blob)
+                    if isinstance(py_obj, dict):
+                        return py_obj
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _coerce_value(value: Any) -> Any:
+        """Coerce textual values to numbers when appropriate."""
+        if isinstance(value, (int, float)):
+            return value
+        if isinstance(value, str):
+            v = value.strip()
+            try:
+                if re.fullmatch(r"-?\d+", v):
+                    return int(v)
+                if re.fullmatch(r"-?\d*\.\d+", v):
+                    return float(v)
+            except Exception:
+                return value
+        return value
+
+    @staticmethod
+    def _is_image_key(key: str) -> bool:
+        k = key.lower()
+        return any(s in k for s in ["image", "chart", "graph", "histogram", "plot", "figure"])
+
+    @staticmethod
+    def format_to_required_schema(result: Any, user_query: Optional[str]) -> dict:
+        """Generalized, schema-driven formatter. Extracts required keys from question text
+        and builds a JSON object using best-effort parsing from agent output. Avoids domain-specific logic.
+        """
+        # Determine required keys from query text
+        required_keys = ResponseFormatter.extract_required_keys_from_query(user_query)
+        # If no explicit schema, bail out by returning original structure best-effort
+        if not required_keys:
+            # Try to return a mapping if we can parse it; else wrap as {"result": ...}
+            if isinstance(result, dict):
+                return result
+            if isinstance(result, str):
+                parsed = ResponseFormatter._attempt_parse_mapping_from_text(result)
+                return parsed if parsed else {"result": result}
+            return {"result": result}
+
+        # Normalize result into text for parsing attempts
+        if isinstance(result, (list, dict)):
+            try:
+                text_result = json.dumps(result)
+            except Exception:
+                text_result = str(result)
+        else:
+            text_result = str(result) if result is not None else ""
+
+        # Attempt to parse an embedded mapping
+        parsed_map = ResponseFormatter._attempt_parse_mapping_from_text(text_result) or {}
+
+        # Prepare output object
+        output: dict = {}
+
+        # Collect any base64 images we can find in the text
+        images = ResponseFormatter._collect_image_data_uris_from_text(text_result)
+        image_idx = 0
+
+        # Fill required keys
+        for key in required_keys:
+            val = None
+            print(f"🔍 DEBUG: Looking for key '{key}' in parsed_map keys: {list(parsed_map.keys()) if isinstance(parsed_map, dict) else 'Not a dict'}")
+            print(f"🔍 DEBUG: Raw text_result contains: {text_result[:500]}...")
+            
+            # 1) Direct from parsed mapping if present (exact match)
+            if isinstance(parsed_map, dict) and key in parsed_map:
+                val = parsed_map.get(key)
+                print(f"🔍 DEBUG: Found exact match for '{key}': {val}")
+            
+            # 2) Case-insensitive match from parsed mapping (much simpler!)
+            if val is None and isinstance(parsed_map, dict):
+                for map_key, map_val in parsed_map.items():
+                    if map_key.lower() == key.lower():
+                        val = map_val
+                        print(f"🔍 DEBUG: Found case-insensitive match '{map_key}' -> '{key}': {val}")
+                        break
+            
+            # 3) If it's an image key and we have images, assign next image
+            if val is None and ResponseFormatter._is_image_key(key) and image_idx < len(images):
+                val = images[image_idx]
+                print(f"🔍 DEBUG: Assigned image {image_idx} to '{key}': {val[:50]}...")
+                image_idx += 1
+            
+            # 4) Simple text search as fallback (using .lower() for case-insensitive matching)
+            if val is None:
+                try:
+                    # Simple case-insensitive search for "key: value" pattern
+                    search_key = key.lower()
+                    lines = text_result.lower().split('\n')
+                    for line in lines:
+                        if search_key in line and ':' in line:
+                            parts = line.split(':', 1)
+                            if len(parts) == 2:
+                                candidate = parts[1].strip().strip(',')
+                                val = ResponseFormatter._coerce_value(candidate)
+                                print(f"🔍 DEBUG: Found text pattern for '{key}': {val}")
+                                break
+                    
+                    # If still no value, try searching for the key in the original text (case-insensitive)
+                    if val is None:
+                        original_lines = text_result.split('\n')
+                        for line in original_lines:
+                            if search_key in line.lower() and ':' in line:
+                                parts = line.split(':', 1)
+                                if len(parts) == 2:
+                                    candidate = parts[1].strip().strip(',')
+                                    val = ResponseFormatter._coerce_value(candidate)
+                                    print(f"🔍 DEBUG: Found case-insensitive text pattern for '{key}': {val}")
+                                    break
+                except Exception as e:
+                    print(f"🔍 DEBUG: Error in text pattern search for '{key}': {e}")
+
+            if val is None:
+                print(f"🔍 DEBUG: No value found for key '{key}', setting to None")
+            else:
+                print(f"🔍 DEBUG: Final value for '{key}': {val}")
+            
+            output[key] = val
+
+        return output
     
     @staticmethod
     def _is_multi_question_query(query: str) -> bool:
