@@ -623,86 +623,7 @@ def cleanup_temp_files():
     except Exception as e:
         print(f"❌ Error during cleanup: {str(e)}")
 
-async def run_scraping_task(url: str, user_prompt: str) -> dict:
-    """
-    Executes a web scraping task for a given URL and prompt with enhanced table extraction.
-    """
-    try:
-        # Clean up temp files before starting
-        cleanup_temp_files()
-        
-        # Use the enhanced Playwright scraper that handles tables
-        scraped_data = await scrape_with_playwright(url)
-        
-        if "error" in scraped_data:
-            return {"error": scraped_data["error"]}
-        
-        if not scraped_data.get("content"):
-            return {"error": "No content could be scraped from the website"}
-        
-        # Format scraped content for the analysis pipeline
-        scraped_content = [{
-            "title": scraped_data["title"],
-            "content": scraped_data["content"],
-            "url": scraped_data["url"],
-            "word_count": scraped_data["word_count"]
-        }]
-        
-        analysis_result = {
-            "scraped_pages": 1,
-            "total_words": scraped_data["word_count"],
-            "url": url,
-            "prompt": user_prompt,
-            "content_summary": scraped_data["content"][:3000],
-            "scraped_content": scraped_content,
-            "tables": scraped_data.get("tables", []),
-            "table_ids": scraped_data.get("table_ids", []),
-            "pages": [{
-                "title": scraped_data["title"],
-                "url": scraped_data["url"],
-                "word_count": scraped_data["word_count"]
-            }]
-        }
 
-        try:
-            # Create vector embeddings for both text and tables
-            create_vector_embeddings(analysis_result, user_prompt)
-            
-            # Add a longer delay to allow Pinecone to index the new data
-            await asyncio.sleep(5)
-            
-            # Initialize Pinecone
-            PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-            INDEX_NAME = "data-analyst-agent-embedder"
-            
-            pc = Pinecone(api_key=PINECONE_API_KEY)
-            index = pc.Index(INDEX_NAME)
-            
-            # Pass the actual scraped content to the search function
-            search_analysis_result = await search_and_analyze(user_prompt, index, scraped_content=scraped_content)
-            
-            # Add the analysis to the result
-            analysis_result["search_analysis"] = search_analysis_result
-            
-            # Print summary of extraction
-            print(f"\n📊 Extraction Summary:")
-            print(f"   Text content: {scraped_data['word_count']} words")
-            print(f"   Tables found: {len(scraped_data.get('tables', []))}")
-            if scraped_data.get("tables"):
-                for i, table in enumerate(scraped_data["tables"]):
-                    print(f"     Table {i+1}: {table['num_rows']} rows, {table['num_columns']} columns")
-            
-        except Exception as e:
-            print(f"⚠️  Vector embeddings or analysis failed: {str(e)}")
-    
-        # Add a small delay before exiting to allow background tasks to clean up.
-        await asyncio.sleep(1)
-    
-        return analysis_result
-
-    except Exception as e:
-        print(f"An error occurred during the scraping task: {e}")
-        return {"error": str(e)}
 
 async def run_scraping_only_task(url: str, user_prompt: str) -> dict:
     """
@@ -756,5 +677,5 @@ if __name__ == '__main__':
     test_prompt = "What is a good prompt to use for LLMs in this course"
 
     # To run the async function from a sync context
-    analysis_result = asyncio.run(run_scraping_task(test_url, test_prompt))
+    analysis_result = asyncio.run(run_scraping_only_task(test_url, test_prompt))
     # No longer need to print the result here as the function does it

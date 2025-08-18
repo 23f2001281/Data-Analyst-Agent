@@ -493,7 +493,7 @@ Table Preview (first 3 rows):
             else:
                 # Regular text content - increase limit to show more content (was 2000, now 4000)
                 content_preview = result['content'][:4000] + "..." if len(result['content']) > 4000 else result['content']
-            context_part = f"""Source {i+1} (Relevance Score: {result['score']:.3f}):
+                context_part = f"""Source {i+1} (Relevance Score: {result['score']:.3f}):
 {content_preview}"""
             
             context_parts.append(context_part)
